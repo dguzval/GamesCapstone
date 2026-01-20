@@ -1,0 +1,1035 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>RT Dungeon Prototype (Boss Arena Lock + Legendary Swipe + Light)</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#0b0f14;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+  #wrap{display:flex;gap:12px;align-items:flex-start;padding:12px}
+  canvas{background:#06080b;border:1px solid #253044;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  #side{width:360px;border:1px solid #253044;border-radius:12px;background:#0d121a;padding:12px;box-shadow:0 8px 30px rgba(0,0,0,.3)}
+  h1{font-size:16px;margin:0 0 8px 0}
+  .muted{color:#9fb0c3;font-size:12px;line-height:1.35}
+  .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;border:1px solid #2a3952;background:#0b0f14;padding:1px 6px;border-radius:7px;font-size:11px;color:#c9d6e2}
+  .row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+  .bar{height:10px;border-radius:999px;background:#1b2433;overflow:hidden;border:1px solid #253044}
+  .bar>div{height:100%;background:#66d9ef;width:0%}
+  .slot{border:1px solid #253044;border-radius:10px;padding:8px;background:#0b1018;margin-top:8px}
+  .tag{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid #2a3952;color:#c9d6e2;background:#0b0f14}
+  #log{margin-top:10px;font-size:12px;line-height:1.25;max-height:220px;overflow:auto;border-top:1px dashed #253044;padding-top:10px}
+  #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.65);backdrop-filter:blur(2px)}
+  #overlay .card{width:min(560px,92vw);border:1px solid #2a3952;border-radius:16px;padding:16px;background:#0d121a;box-shadow:0 20px 70px rgba(0,0,0,.55)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="1000" height="620"></canvas>
+  <div id="side">
+    <h1>RT Dungeon (Boss Arena Lock)</h1>
+    <div class="muted">
+      <div><span class="kbd">WASD</span>/<span class="kbd">Arrows</span> move • <span class="kbd">J</span> swipe attack</div>
+      <div><span class="kbd">G</span> pickup • <span class="kbd">1–6</span> equip/use • <span class="kbd">Shift+1–6</span> drop</div>
+      <div><span class="kbd">H</span> help • <span class="kbd">M</span> minimap • <span class="kbd">N</span> new run • <span class="kbd">R</span> respawn (when dead)</div>
+      <div style="margin-top:6px">
+        Swipe is <b>2 tiles</b> by default. The <b style="color:#ffd166">Legend Sword</b> (boss drop) upgrades it to <b>3 tiles</b>.
+      </div>
+      <div style="margin-top:6px">
+        Swipe hits tiles <b>left → right</b> (relative to your facing). The <b>second</b> hit is the strongest.
+      </div>
+      <div style="margin-top:6px">
+        Boss has an <b style="color:#c792ea">arena room</b>. When you step inside, the door seals; it <b>reopens only after the boss is defeated</b>.
+      </div>
+    </div>
+
+    <div style="margin-top:10px" class="row">
+      <div class="muted"><b>Run</b>: <span id="seed">??????</span></div>
+      <div class="muted"><b>Gold</b>: <span id="gold">0</span></div>
+    </div>
+
+    <div style="margin-top:10px">
+      <div class="row muted"><div><b>HP</b>: <span id="hp">0</span>/<span id="hpmax">0</span></div><div><b>XP</b>: <span id="xp">0</span></div></div>
+      <div class="bar"><div id="hpbar"></div></div>
+    </div>
+
+    <div style="margin-top:10px">
+      <div class="row muted"><div><b>Boss</b>: <span id="bossState">alive</span></div><div><b>Boss HP</b>: <span id="bossHp">?</span></div></div>
+      <div class="bar"><div id="bossbar" style="background:#c792ea"></div></div>
+    </div>
+
+    <div style="margin-top:10px" class="row muted">
+      <div><b>ATK</b>: <span id="atk">0</span></div>
+      <div><b>DEF</b>: <span id="def">0</span></div>
+      <div><b>Crit</b>: <span id="crit">0%</span></div>
+    </div>
+
+    <div style="margin-top:10px" class="muted">
+      <div class="row"><span>Weapon</span><span id="eqW" class="tag">none</span></div>
+      <div class="row"><span>Armor</span><span id="eqA" class="tag">none</span></div>
+      <div class="row"><span>Trinket</span><span id="eqT" class="tag">none</span></div>
+    </div>
+
+    <div id="inv"></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div id="overlay">
+  <div class="card">
+    <h2 id="ovTitle" style="margin:0 0 8px 0">You Died</h2>
+    <div id="ovText" class="muted">Your starting loadout will reroll.</div>
+    <div class="muted" style="margin-top:10px">
+      Press <span class="kbd">R</span> to respawn • <span class="kbd">N</span> new run
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const UI = {
+    seed: q('seed'), gold:q('gold'),
+    hp:q('hp'), hpmax:q('hpmax'), hpbar:q('hpbar'),
+    xp:q('xp'), atk:q('atk'), def:q('def'), crit:q('crit'),
+    bossState:q('bossState'), bossHp:q('bossHp'), bossbar:q('bossbar'),
+    eqW:q('eqW'), eqA:q('eqA'), eqT:q('eqT'),
+    inv: document.getElementById('inv'),
+    log: document.getElementById('log'),
+    overlay: document.getElementById('overlay'),
+    ovTitle: document.getElementById('ovTitle'),
+    ovText: document.getElementById('ovText'),
+  };
+  function q(id){ return document.getElementById(id); }
+  function log(msg){
+    const el=document.createElement('div');
+    el.textContent=msg;
+    UI.log.prepend(el);
+    while(UI.log.childNodes.length>70) UI.log.removeChild(UI.log.lastChild);
+  }
+
+  // RNG helpers
+  const rand=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const pick=(arr)=>arr[Math.floor(Math.random()*arr.length)];
+  const shuffle=(arr)=>{for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]]} return arr};
+  const uid=()=>Math.random().toString(36).slice(2,9);
+
+  // World
+  const TILE=32;         // zoomed-in
+  const W=50, H=30;
+  const SAFE_RADIUS = 6; // sanctuary radius around the start (no enemies)
+  const T={WALL:0,FLOOR:1,DOOR:2};
+  const C={
+    wall:'#1b2433', floor:'#0f1622', floor2:'#111b2a', door:'#2a3952',
+    player:'#66d9ef', enemy:'#ff6b6b', tele:'#ffcc66',
+    boss:'#c792ea', bossTele:'#ffd166',
+    loot:'#a0ffb3', potion:'#66ffcc', chest:'#c792ea', bossDrop:'#ffd166',
+    text:'#e6edf3'
+  };
+
+  // Items
+  const RARITIES=[
+    {name:'Common',w:55,m:1.0},{name:'Uncommon',w:25,m:1.25},{name:'Rare',w:14,m:1.6},{name:'Epic',w:5,m:2.1},{name:'Legend',w:1,m:2.8}
+  ];
+  function rollRarity(forced=null){
+    if(forced) return RARITIES.find(r=>r.name===forced) || RARITIES[0];
+    const tot=RARITIES.reduce((s,r)=>s+r.w,0);
+    let x=Math.random()*tot;
+    for(const r of RARITIES){ x-=r.w; if(x<=0) return r; }
+    return RARITIES[0];
+  }
+  const TYPES=['Weapon','Armor','Trinket','Potion'];
+  function makeItem(type=null, rarity=null){
+    const r=rollRarity(rarity);
+    const t=type||pick(TYPES);
+    const base=1+Math.floor((S.p?.xp||0)/12);
+    const it={id:uid(), type:t, rarity:r.name, name:'', stats:{}, desc:''};
+
+    if(t==='Weapon'){
+      const atk=Math.max(1, Math.round((base+rand(0,2))*r.m));
+      const crit=Math.round((rand(0,3) + (r.name==='Epic'?2:0) + (r.name==='Legend'?4:0)));
+      it.name=`${r.name} Blade`; it.stats={atk,crit}; it.desc=`+${atk} ATK, +${crit}% crit`;
+    } else if(t==='Armor'){
+      const def=Math.max(0, Math.round((rand(0,2)+Math.floor(base/2))*r.m));
+      const hp=Math.max(0, Math.round((rand(0,3)+Math.floor(base/2))*(r.m*0.8)));
+      it.name=`${r.name} Armor`; it.stats={def,hp}; it.desc=`+${def} DEF, +${hp} max HP`;
+    } else if(t==='Trinket'){
+      const atk=Math.max(0, Math.round(rand(0,2)*r.m));
+      const def=Math.max(0, Math.round(rand(0,2)*r.m));
+      const crit=Math.round(rand(1,5)*(r.m/1.1));
+      it.name=`${r.name} Charm`; it.stats={atk,def,crit}; it.desc=`+${atk} ATK, +${def} DEF, +${crit}% crit`;
+    } else {
+      const heal=Math.max(4, Math.round((6+rand(0,6)+base)*(r.m*0.9)));
+      it.name=`${r.name} Potion`; it.stats={heal}; it.desc=`Heals ${heal} HP (use)`;
+    }
+    return it;
+  }
+  function bossSword(){
+    const atk=10+Math.floor((S.p?.xp||0)/10);
+    return {id:uid(), type:'Weapon', rarity:'Legend', name:'Legend Sword', stats:{atk,crit:12}, desc:`+${atk} ATK, +12% crit (boss drop)`, bossDrop:true};
+  }
+
+  // Dungeon gen
+  function genDungeon(){
+    const map=Array.from({length:H},()=>Array.from({length:W},()=>T.WALL));
+    const rooms=[];
+    const carveRoom=(x,y,w,h)=>{
+      for(let j=y;j<y+h;j++) for(let i=x;i<x+w;i++){
+        if(i<=0||j<=0||i>=W-1||j>=H-1) continue;
+        map[j][i]=T.FLOOR;
+      }
+    };
+    const carveLine=(x1,y1,x2,y2)=>{
+      const dx=Math.sign(x2-x1), dy=Math.sign(y2-y1);
+      let x=x1,y=y1; map[y][x]=T.FLOOR;
+      while(x!==x2 || y!==y2){
+        if(x!==x2) x+=dx; else if(y!==y2) y+=dy;
+        if(x>0&&y>0&&x<W-1&&y<H-1) map[y][x]=T.FLOOR;
+      }
+    };
+    const corridor=(x1,y1,x2,y2)=>{
+      if(Math.random()<0.5){ carveLine(x1,y1,x2,y1); carveLine(x2,y1,x2,y2); }
+      else { carveLine(x1,y1,x1,y2); carveLine(x1,y2,x2,y2); }
+    };
+
+    let attempts=0;
+    while(rooms.length<16 && attempts<3000){
+      attempts++;
+      const rw=rand(6,12), rh=rand(6,9);
+      const rx=rand(2,W-rw-3), ry=rand(2,H-rh-3);
+      let ok=true;
+      for(const r of rooms){
+        const pad=2;
+        if(rx<r.x+r.w+pad && rx+rw+pad>r.x && ry<r.y+r.h+pad && ry+rh+pad>r.y){ ok=false; break; }
+      }
+      if(!ok) continue;
+      carveRoom(rx,ry,rw,rh);
+      rooms.push({x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)});
+    }
+    rooms.sort((a,b)=>a.cx-b.cx);
+    for(let i=1;i<rooms.length;i++) corridor(rooms[i-1].cx,rooms[i-1].cy,rooms[i].cx,rooms[i].cy);
+
+    // doors cosmetic
+    for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){
+      if(map[y][x]!==T.WALL) continue;
+      const n=map[y-1][x], s=map[y+1][x], w=map[y][x-1], e=map[y][x+1];
+      const floorsNS=(n===T.FLOOR && s===T.FLOOR), floorsWE=(w===T.FLOOR && e===T.FLOOR);
+      const wallsNS=(n===T.WALL && s===T.WALL), wallsWE=(w===T.WALL && e===T.WALL);
+      if((floorsNS && wallsWE) || (floorsWE && wallsNS)){
+        if(Math.random()<0.06) map[y][x]=T.DOOR;
+      }
+    }
+
+    const start={x:rooms[0]?.cx||2, y:rooms[0]?.cy||2};
+
+    // boss farthest room
+    let bossRoom=rooms[rooms.length-1]||rooms[0]||{x:W-12,y:H-10,w:10,h:8,cx:W-7,cy:H-6};
+    let best=-1;
+    for(const r of rooms){
+      const d=Math.abs(r.cx-start.x)+Math.abs(r.cy-start.y);
+      if(d>best){best=d; bossRoom=r;}
+    }
+    const bossPos={x:bossRoom.cx, y:bossRoom.cy};
+
+    // Turn boss room into a sealed arena with ONE door
+    // 1) Wall the perimeter
+    for(let y=bossRoom.y; y<bossRoom.y+bossRoom.h; y++){
+      for(let x=bossRoom.x; x<bossRoom.x+bossRoom.w; x++){
+        const onBorder = (x===bossRoom.x || x===bossRoom.x+bossRoom.w-1 || y===bossRoom.y || y===bossRoom.y+bossRoom.h-1);
+        if(onBorder) map[y][x]=T.WALL;
+        else map[y][x]=T.FLOOR;
+      }
+    }
+
+    // 2) Choose a doorway that connects to an existing corridor/floor outside
+    const candidates=[];
+    const dirs=[{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}];
+    for(let y=bossRoom.y; y<bossRoom.y+bossRoom.h; y++){
+      for(let x=bossRoom.x; x<bossRoom.x+bossRoom.w; x++){
+        const onBorder = (x===bossRoom.x || x===bossRoom.x+bossRoom.w-1 || y===bossRoom.y || y===bossRoom.y+bossRoom.h-1);
+        if(!onBorder) continue;
+        // Determine outward direction based on which side
+        let out=null, inn=null;
+        if(x===bossRoom.x){ out={dx:-1,dy:0}; inn={dx:1,dy:0}; }
+        else if(x===bossRoom.x+bossRoom.w-1){ out={dx:1,dy:0}; inn={dx:-1,dy:0}; }
+        else if(y===bossRoom.y){ out={dx:0,dy:-1}; inn={dx:0,dy:1}; }
+        else if(y===bossRoom.y+bossRoom.h-1){ out={dx:0,dy:1}; inn={dx:0,dy:-1}; }
+        if(!out||!inn) continue;
+
+        const ox=x+out.dx, oy=y+out.dy;
+        const ix=x+inn.dx, iy=y+inn.dy;
+        if(ox<=0||oy<=0||ox>=W-1||oy>=H-1) continue;
+        // outside must be floor/door from the existing dungeon corridors
+        if(map[oy][ox]===T.WALL) continue;
+        // inside must be floor
+        if(ix<0||iy<0||ix>=W||iy>=H) continue;
+        if(map[iy][ix]!==T.FLOOR) continue;
+
+        candidates.push({x,y});
+      }
+    }
+
+    let door = candidates.length ? pick(candidates) : {x:bossRoom.cx, y:bossRoom.y}; // fallback top edge
+    // Ensure door is on border; if fallback maybe not, clamp:
+    if(!(door.x===bossRoom.x || door.x===bossRoom.x+bossRoom.w-1 || door.y===bossRoom.y || door.y===bossRoom.y+bossRoom.h-1)){
+      door = {x:bossRoom.x, y:bossRoom.cy};
+    }
+    map[door.y][door.x]=T.DOOR;
+
+    return {map, rooms, start, bossPos, bossRoom, door};
+  }
+  const walkable=(t)=>t===T.FLOOR||t===T.DOOR;
+
+  // State
+  const S={
+    map:null, rooms:null, start:null, bossPos:null,
+    bossRoom:null, bossDoor:null, bossDoorSealed:false, playerInBoss:false, bossSpawned:false,
+    p:null, mobs:[], bossId:null,
+    drops:[], chests:[],
+    dead:false, help:true,
+    minimap:false, // default off
+    seed:'??????', last:0
+  };
+
+  function inBossRect(x,y){
+    const r=S.bossRoom;
+    if(!r) return false;
+    return x>=r.x && x<r.x+r.w && y>=r.y && y<r.y+r.h;
+  }
+  function inBossInterior(x,y){
+    const r=S.bossRoom;
+    if(!r) return false;
+    return x>r.x && x<r.x+r.w-1 && y>r.y && y<r.y+r.h-1;
+  }
+
+  // Facing-based swipe sequence (ordered left -> right relative to facing)
+  function swipeSequence(p){
+    const dx=p.f.dx, dy=p.f.dy;
+    // left/right vectors relative to facing
+    const lx=dy, ly=-dx;  // left = ccw perpendicular
+    const rx=-dy, ry=dx;  // right = cw perpendicular
+
+    const fx=p.x+dx, fy=p.y+dy;
+
+    const hasLegend = !!(p.eq.weapon && p.eq.weapon.rarity==='Legend' && (p.eq.weapon.bossDrop || /Legend Sword/i.test(p.eq.weapon.name||'')));
+    const width = hasLegend ? 3 : 2;
+
+    const seq=[];
+    // left -> center -> right, but for width 2: left -> center
+    seq.push({x:fx+lx, y:fy+ly});
+    seq.push({x:fx, y:fy});
+    if(width===3) seq.push({x:fx+rx, y:fy+ry});
+
+    return seq.filter(t=>t.x>=0&&t.x<W&&t.y>=0&&t.y<H);
+  }
+
+  // Entities
+  function makeMob(x,y){
+    const tier=clamp(Math.floor((S.p?.xp||0)/18),0,6);
+    const hp=7+tier*2+rand(0,2);
+    return {
+      id:uid(), x,y, boss:false,
+      hp, maxhp:hp,
+      atk:2+tier+rand(0,1), def:Math.floor(tier/2),
+      // slower movement
+      moveCd:rand(520,920),
+      atkCd:rand(520,900),
+      tele:0, act:0, isTele:false, isAct:false
+    };
+  }
+  function makeBoss(x,y){
+    return {
+      id:uid(), x,y, boss:true,
+      hp:95, maxhp:95, atk:8, def:3,
+      moveCd:rand(620,1020),
+      atkCd:rand(460,760),
+      tele:0, act:0, isTele:false, isAct:false
+    };
+  }
+
+  function eff(p){
+    let maxHp=p.baseMaxHp, atk=p.baseAtk, def=p.baseDef, crit=0;
+    for(const it of [p.eq.weapon,p.eq.armor,p.eq.trinket].filter(Boolean)){
+      const s=it.stats||{};
+      if(s.hp) maxHp+=s.hp;
+      if(s.atk) atk+=s.atk;
+      if(s.def) def+=s.def;
+      if(s.crit) crit+=s.crit;
+    }
+    crit=clamp(crit,0,60);
+    return {maxHp, atk, def, crit};
+  }
+
+  function rerollLoadout(){
+    const p=S.p;
+    p.inv=Array.from({length:6},()=>null);
+    const weapon=makeItem('Weapon', Math.random()<0.25?'Uncommon':null);
+    const armor=makeItem('Armor', Math.random()<0.20?'Uncommon':null);
+    const pot=makeItem('Potion', null);
+    const trink=Math.random()<0.55?makeItem('Trinket',null):null;
+    const items=[weapon,armor,pot]; if(trink) items.push(trink);
+    shuffle(items);
+    for(let i=0;i<items.length;i++) p.inv[i]=items[i];
+    p.eq.weapon=null; p.eq.armor=null; p.eq.trinket=null;
+    for(let i=0;i<6;i++) autoEquip(i);
+    log('Loadout rerolled.');
+  }
+  function itemScore(it){
+    if(!it) return 0;
+    const s=it.stats||{};
+    if(it.type==='Potion') return (s.heal||0)*0.2;
+    return (s.atk||0)*2 + (s.def||0)*1.5 + (s.hp||0)*0.6 + (s.crit||0)*0.5;
+  }
+  function autoEquip(i){
+    const p=S.p; const it=p.inv[i];
+    if(!it || it.type==='Potion') return;
+    const slot = it.type==='Weapon'?'weapon':(it.type==='Armor'?'armor':'trinket');
+    const cur=p.eq[slot];
+    if(!cur || itemScore(it)>itemScore(cur)) p.eq[slot]=it;
+  }
+
+  function addItem(it){
+    const p=S.p;
+    const idx=p.inv.findIndex(x=>x===null);
+    if(idx<0){ log('Inventory full. Drop (Shift+1–6).'); return false; }
+    p.inv[idx]=it;
+    log(`Picked up ${it.name} (${it.rarity}).`);
+    autoEquip(idx);
+    return true;
+  }
+
+  function useSlot(i){
+    const p=S.p; const it=p.inv[i];
+    if(!it){ log(`Slot ${i+1} empty.`); return; }
+    if(it.type==='Potion'){
+      const es=eff(p);
+      const before=p.hp;
+      p.hp=clamp(p.hp+(it.stats.heal||0),0,es.maxHp);
+      log(`Potion +${p.hp-before} HP.`);
+      p.inv[i]=null;
+      return;
+    }
+    const slot = it.type==='Weapon'?'weapon':(it.type==='Armor'?'armor':'trinket');
+    p.eq[slot]=it;
+    log(`Equipped ${it.name}.`);
+  }
+
+  function dropSlot(i){
+    const p=S.p; const it=p.inv[i];
+    if(!it){ log(`Slot ${i+1} empty.`); return; }
+    const x=p.x,y=p.y;
+    const hasItemHere = S.drops.some(d=>d.x===x&&d.y===y&&d.item);
+    const hasChestHere = S.chests.some(c=>c.x===x&&c.y===y);
+    if(hasItemHere || hasChestHere){ log('Tile occupied, move 1 tile.'); return; }
+    S.drops.push({x,y,item:it});
+    p.inv[i]=null;
+    for(const k of ['weapon','armor','trinket']) if(p.eq[k] && p.eq[k].id===it.id) p.eq[k]=null;
+    log(`Dropped ${it.name}.`);
+  }
+
+  // Spawns
+  function placeStuff(){
+    S.mobs=[]; S.drops=[]; S.chests=[]; S.bossId=null;
+    S.bossSpawned=false;
+    S.bossDoorSealed=false;
+    S.playerInBoss=false;
+
+    const occ=(x,y)=> (x===S.p.x&&y===S.p.y) || (x===S.bossPos.x&&y===S.bossPos.y) ||
+      S.mobs.some(m=>m.x===x&&m.y===y) || S.chests.some(c=>c.x===x&&c.y===y) || S.drops.some(d=>d.x===x&&d.y===y);
+
+    const rndTile=()=>{
+      for(let k=0;k<8000;k++){
+        const r=pick(S.rooms);
+        const x=rand(r.x+1,r.x+r.w-2), y=rand(r.y+1,r.y+r.h-2);
+        if(!walkable(S.map[y][x])) continue;
+        // sanctuary around start
+        if(Math.abs(x - S.start.x) + Math.abs(y - S.start.y) <= SAFE_RADIUS) continue;
+        // never place common spawns inside boss arena
+        if(inBossRect(x,y)) continue;
+        if(occ(x,y)) continue;
+        return {x,y};
+      }
+      return {x:S.start.x+2,y:S.start.y+2};
+    };
+    // Boss will spawn AFTER you enter the arena and the door seals.
+    S.bossId = null;
+    S.bossSpawned = false;
+
+    // enemies (none in start sanctuary, none in boss arena)
+    for(let i=0;i<16;i++){
+      const p=rndTile();
+      S.mobs.push(makeMob(p.x,p.y));
+    }
+
+    // chests and loot (none in boss arena; keep sanctuary clear too)
+    for(let i=0;i<9;i++){
+      const p=rndTile();
+      S.chests.push({x:p.x,y:p.y,open:false});
+    }
+    for(let i=0;i<8;i++){
+      const p=rndTile();
+      if(Math.random()<0.55) S.drops.push({x:p.x,y:p.y,gold:rand(4,16)});
+      else S.drops.push({x:p.x,y:p.y,item:makeItem()});
+    }
+  }
+
+  function newRun(){
+    S.seed=Math.random().toString(36).slice(2,8).toUpperCase();
+    UI.seed.textContent=S.seed;
+    UI.log.innerHTML='';
+    S.dead=false; hideOverlay();
+
+    const d=genDungeon();
+    S.map=d.map; S.rooms=d.rooms; S.start=d.start; S.bossPos=d.bossPos;
+    S.bossRoom=d.bossRoom; S.bossDoor=d.door;
+
+    S.p={
+      x:S.start.x,y:S.start.y,f:{dx:0,dy:1},
+      baseMaxHp:8, baseAtk:1, baseDef:0,
+      hp:8, xp:0, gold:0,
+      inv:Array.from({length:6},()=>null),
+      eq:{weapon:null, armor:null, trinket:null},
+      moveCd:0, atkCd:0,
+      wind:0, winding:false,
+      swinging:false, phase:0, phaseTimer:0, phaseGap:75,
+      attackSeq:[]
+    };
+    rerollLoadout();
+    placeStuff();
+    log('New run. Starting area is safe. Boss arena seals when you enter.');
+  }
+
+  // Input (drop uses e.code so Shift+1..6 works on all keyboards)
+  const keys=new Set();
+  window.addEventListener('keydown',(e)=>{
+    keys.add(e.key);
+    const code=e.code;
+    const k=e.key;
+
+    if(k==='h'||k==='H'){ S.help=!S.help; return; }
+    if(k==='m'||k==='M'){ S.minimap=!S.minimap; return; }
+    if(k==='n'||k==='N'){ newRun(); return; }
+
+    if(S.dead){
+      if(k==='r'||k==='R') respawn();
+      return;
+    }
+
+    if(code && /^Digit[1-6]$/.test(code)){
+      const idx=parseInt(code.slice(5),10)-1;
+      if(e.shiftKey) dropSlot(idx);
+      else useSlot(idx);
+      return;
+    }
+
+    if(k==='g'||k==='G'){ pickup(false); return; }
+    if(k==='j'||k==='J'){ startAttack(); return; }
+  });
+  window.addEventListener('keyup',(e)=>keys.delete(e.key));
+
+  function startAttack(){
+    const p=S.p;
+    if(p.atkCd>0 || p.winding || p.swinging) return;
+    p.winding=true; p.wind=170;
+    p.atkCd=520;
+    log('Swipe!');
+  }
+
+  
+  function spawnBossInArena(){
+    if(S.bossId || S.bossSpawned) return;
+    // Pick a spawn tile inside the boss interior; prefer bossPos.
+    const preferred = {x:S.bossPos.x, y:S.bossPos.y};
+    const candidates = [];
+    for(let y=S.bossRoom.y+1; y<S.bossRoom.y+S.bossRoom.h-1; y++){
+      for(let x=S.bossRoom.x+1; x<S.bossRoom.x+S.bossRoom.w-1; x++){
+        if(!walkable(S.map[y][x])) continue;
+        if(x===S.p.x && y===S.p.y) continue;
+        if(S.mobs.some(m=>m.x===x&&m.y===y)) continue;
+        candidates.push({x,y});
+      }
+    }
+    let spot = candidates.find(t=>t.x===preferred.x && t.y===preferred.y) || candidates[0];
+    if(!spot){ spot = {x:S.bossPos.x, y:S.bossPos.y}; }
+    const boss = makeBoss(spot.x, spot.y);
+    S.mobs.push(boss);
+    S.bossId = boss.id;
+    S.bossSpawned = true;
+    log('A presence emerges... The BOSS appears!');
+  }
+
+function sealBossDoor(){
+    if(!S.bossDoor || S.bossDoorSealed) return;
+    // If the boss was already spawned AND defeated, don't seal anymore.
+    if(S.bossSpawned && !S.bossId) return;
+
+    S.bossDoorSealed = true;
+    S.map[S.bossDoor.y][S.bossDoor.x] = T.WALL;
+    log('The door seals behind you...');
+    // Boss spawns when the seal triggers.
+    spawnBossInArena();
+  }
+
+  function openBossDoor(){
+    if(!S.bossDoor) return;
+    S.bossDoorSealed=false;
+    S.map[S.bossDoor.y][S.bossDoor.x]=T.DOOR;
+    log('The arena door reopens.');
+  }
+
+  function tryMove(dx,dy){
+    const p=S.p;
+    const nx=p.x+dx, ny=p.y+dy;
+
+    if(nx<0||ny<0||nx>=W||ny>=H) return false;
+    if(!walkable(S.map[ny][nx])) return false;
+
+    // chest blocks until opened
+    const chest=S.chests.find(c=>c.x===nx&&c.y===ny&&!c.open);
+    if(chest){
+      chest.open=true;
+      log('Chest opened.');
+      const n=rand(1,2);
+      for(let i=0;i<n;i++){
+        if(Math.random()<0.35) S.drops.push({x:nx,y:ny,gold:rand(10,28)});
+        else S.drops.push({x:nx,y:ny,item:makeItem()});
+      }
+      pickup(true);
+      return true;
+    }
+
+    // prevent stepping onto mobs
+    if(S.mobs.some(m=>m.x===nx&&m.y===ny)) return false;
+
+    p.x=nx; p.y=ny;
+    pickup(true);
+
+    // Detect entering/leaving boss arena
+    const nowIn = inBossInterior(p.x,p.y);
+    if(nowIn && !S.playerInBoss){
+      S.playerInBoss=true;
+      sealBossDoor();
+    } else if(!nowIn && S.playerInBoss && !S.bossId){
+      // after boss is dead, we allow leaving; track state
+      S.playerInBoss=false;
+    }
+
+    return true;
+  }
+
+  function pickup(auto){
+    const p=S.p;
+    let any=false;
+    // gold
+    for(let i=S.drops.length-1;i>=0;i--){
+      const d=S.drops[i];
+      if(d.x===p.x && d.y===p.y && d.gold){
+        p.gold+=d.gold;
+        S.drops.splice(i,1);
+        log(`+${d.gold} gold`);
+        any=true;
+      }
+    }
+    // items
+    for(let i=S.drops.length-1;i>=0;i--){
+      const d=S.drops[i];
+      if(d.x===p.x && d.y===p.y && d.item){
+        if(addItem(d.item)){ S.drops.splice(i,1); any=true; }
+      }
+    }
+    if(!any && !auto) log('Nothing here.');
+  }
+
+  // Combat helpers
+  function dmgPlayer(amount){
+    const p=S.p;
+    const es=eff(p);
+    const d=Math.max(0, amount - es.def);
+    p.hp-=d;
+    log(`-${d} HP`);
+    if(p.hp<=0) die();
+  }
+
+  function applyPhaseHit(phaseIdx){
+    const p=S.p;
+    const es=eff(p);
+    const seq=p.attackSeq;
+    if(phaseIdx<0 || phaseIdx>=seq.length) return;
+    const tile=seq[phaseIdx];
+
+    const mults = (seq.length===3) ? [0.85, 1.55, 1.0] : [0.85, 1.55];
+    const mult = mults[Math.min(phaseIdx, mults.length-1)];
+
+    const m=S.mobs.find(e=>e.x===tile.x && e.y===tile.y);
+    if(!m) return;
+
+    const counter=m.isTele && m.tele>0;
+
+    let d=Math.max(1, es.atk - m.def + rand(0,1));
+    if(Math.random()*100<es.crit) d=Math.round(d*1.7);
+    d=Math.max(1, Math.round(d*mult));
+
+    if(counter){
+      d=Math.round(d*1.25);
+      m.isTele=false; m.tele=0; m.isAct=false; m.act=0;
+      m.atkCd += m.boss ? 420 : 260;
+      log('COUNTER!');
+    }
+
+    m.hp-=d;
+    log(`${m.boss?'Boss':'Enemy'} -${d}`);
+
+    if(m.hp<=0){
+      const wasBoss=m.boss;
+      S.mobs=S.mobs.filter(x=>x.id!==m.id);
+      if(wasBoss){
+        S.bossId=null;
+        log('BOSS DEFEATED! Dropped Legend Sword.');
+        S.drops.push({x:m.x,y:m.y,item:bossSword()});
+        // Open arena door now that boss is dead
+        openBossDoor();
+      } else {
+        p.xp+=3;
+        if(Math.random()<0.55) S.drops.push({x:m.x,y:m.y,gold:rand(6,18)});
+        else S.drops.push({x:m.x,y:m.y,item:makeItem()});
+      }
+    }
+  }
+
+  function startSwing(){
+    const p=S.p;
+    p.winding=false;
+    p.swinging=true;
+    p.phase=0;
+    p.phaseGap=75;
+    p.attackSeq=swipeSequence(p); // ordered left->right
+    // first hit immediately
+    applyPhaseHit(0);
+    p.phaseTimer=p.phaseGap;
+  }
+
+  function updateMob(m,dt){
+    const p=S.p;
+    m.moveCd-=dt; m.atkCd-=dt;
+
+    if(m.isTele){
+      m.tele-=dt;
+      if(m.tele<=0){ m.isTele=false; m.isAct=true; m.act=m.boss?170:120; }
+    } else if(m.isAct){
+      m.act-=dt;
+      if(m.act<=0) m.isAct=false;
+      else{
+        const dist=Math.abs(m.x-p.x)+Math.abs(m.y-p.y);
+        if(dist===1){
+          const base=m.atk+rand(0,1);
+          dmgPlayer(m.boss ? base+2 : base);
+          m.isAct=false;
+        }
+      }
+    }
+
+    const dist=Math.abs(m.x-p.x)+Math.abs(m.y-p.y);
+    if(!m.isTele && !m.isAct && dist===1 && m.atkCd<=0){
+      m.isTele=true;
+      m.tele=m.boss?340:260;
+      m.atkCd=(m.boss?700:640)+rand(0,240);
+      return;
+    }
+
+    if(!m.isTele && !m.isAct && m.moveCd<=0){
+      m.moveCd = m.boss ? rand(650,1100) : rand(600,1050);
+
+      let moves=[{dx:1,dy:0},{dx:-1,dy:0},{dx:0,dy:1},{dx:0,dy:-1}];
+      moves.sort((a,b)=>{
+        const da=Math.abs((m.x+a.dx)-p.x)+Math.abs((m.y+a.dy)-p.y);
+        const db=Math.abs((m.x+b.dx)-p.x)+Math.abs((m.y+b.dy)-p.y);
+        return da-db;
+      });
+      if(!m.boss && Math.random()<0.14) shuffle(moves);
+
+      for(const mv of moves){
+        const nx=m.x+mv.dx, ny=m.y+mv.dy;
+        if(nx<0||ny<0||nx>=W||ny>=H) continue;
+        if(!walkable(S.map[ny][nx])) continue;
+
+        // sanctuary: enemies cannot enter the start radius
+        if(Math.abs(nx - S.start.x) + Math.abs(ny - S.start.y) <= SAFE_RADIUS) continue;
+
+        // boss arena rule: only the boss can be inside the boss room
+        if(!m.boss && inBossRect(nx,ny)) continue;
+
+        if(nx===p.x && ny===p.y) continue;
+        if(S.mobs.some(o=>o.id!==m.id && o.x===nx && o.y===ny)) continue;
+
+        // don't step onto unopened chests
+        const chest=S.chests.find(c=>c.x===nx&&c.y===ny&&!c.open);
+        if(chest) continue;
+
+        m.x=nx; m.y=ny;
+        break;
+      }
+    }
+  }
+
+  // Lighting overlay (fog)
+  function applyLightMask(playerScreenX, playerScreenY){
+    const w=canvas.width, h=canvas.height;
+    ctx.save();
+    const r1=120;   // fully visible radius
+    const r2=260;   // fade-out radius
+    const g=ctx.createRadialGradient(playerScreenX, playerScreenY, r1, playerScreenX, playerScreenY, r2);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.85)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
+    ctx.restore();
+  }
+
+  // Death/respawn
+  function showOverlay(title,text){
+    UI.ovTitle.textContent=title;
+    UI.ovText.textContent=text;
+    UI.overlay.style.display='flex';
+  }
+  function hideOverlay(){ UI.overlay.style.display='none'; }
+  function die(){
+    S.dead=true;
+    showOverlay('You Died','Starting loadout rerolls on respawn.');
+    log('Press R to respawn.');
+  }
+  function respawn(){
+    if(!S.dead) return;
+    S.dead=false;
+    hideOverlay();
+    const p=S.p;
+
+    // Restore boss door to open state for a fresh attempt
+    if(S.bossDoor){
+      S.map[S.bossDoor.y][S.bossDoor.x]=T.DOOR;
+    }
+
+    p.x=S.start.x; p.y=S.start.y; p.f={dx:0,dy:1};
+    rerollLoadout();
+    const es=eff(p);
+    p.hp=es.maxHp;
+    placeStuff();
+    log('Respawned. Loadout rerolled. Boss arena resets.');
+  }
+
+  // Main loop
+  function update(dt){
+    const p=S.p;
+    if(S.dead) return;
+
+    p.moveCd=Math.max(0,p.moveCd-dt);
+    p.atkCd=Math.max(0,p.atkCd-dt);
+
+    if(p.winding){
+      p.wind-=dt;
+      if(p.wind<=0) startSwing();
+    } else if(p.swinging){
+      p.phaseTimer-=dt;
+      if(p.phaseTimer<=0){
+        p.phase++;
+        if(p.phase < p.attackSeq.length){
+          applyPhaseHit(p.phase);
+          p.phaseTimer=p.phaseGap;
+        } else {
+          p.swinging=false;
+          p.attackSeq=[];
+        }
+      }
+    }
+
+    const canMove=!p.winding; // windup locks movement
+    if(canMove && p.moveCd<=0){
+      let dx=0,dy=0;
+      if(keys.has('ArrowUp')||keys.has('w')||keys.has('W')) dy=-1;
+      else if(keys.has('ArrowDown')||keys.has('s')||keys.has('S')) dy=1;
+      else if(keys.has('ArrowLeft')||keys.has('a')||keys.has('A')) dx=-1;
+      else if(keys.has('ArrowRight')||keys.has('d')||keys.has('D')) dx=1;
+
+      if(dx||dy){
+        p.f={dx,dy};
+        const moved=tryMove(dx,dy);
+        p.moveCd = moved ? 120 : 80;
+      }
+    }
+
+    for(const m of S.mobs){
+      updateMob(m,dt);
+      if(S.dead) break;
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const p=S.p;
+    const camX=clamp(p.x*TILE - canvas.width/2 + TILE/2, 0, W*TILE - canvas.width);
+    const camY=clamp(p.y*TILE - canvas.height/2 + TILE/2, 0, H*TILE - canvas.height);
+
+    const x0=Math.floor(camX/TILE), y0=Math.floor(camY/TILE);
+    const x1=clamp(x0 + Math.ceil(canvas.width/TILE)+1, 0, W);
+    const y1=clamp(y0 + Math.ceil(canvas.height/TILE)+1, 0, H);
+
+    // map
+    for(let y=y0;y<y1;y++) for(let x=x0;x<x1;x++){
+      const t=S.map[y][x];
+      const px=x*TILE - camX, py=y*TILE - camY;
+      if(t===T.WALL){ ctx.fillStyle=C.wall; ctx.fillRect(px,py,TILE,TILE); }
+      else{
+        ctx.fillStyle=((x+y)&1)?C.floor:C.floor2; ctx.fillRect(px,py,TILE,TILE);
+        if(t===T.DOOR){ ctx.fillStyle=C.door; ctx.fillRect(px+9,py+9,TILE-18,TILE-18); }
+      }
+    }
+
+    // drops
+    for(const d of S.drops){
+      const px=d.x*TILE - camX, py=d.y*TILE - camY;
+      if(d.gold){
+        ctx.fillStyle=C.tele;
+        ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,7,0,Math.PI*2); ctx.fill();
+      } else if(d.item){
+        ctx.fillStyle = d.item.bossDrop ? C.bossDrop : (d.item.type==='Potion'?C.potion:C.loot);
+        ctx.fillRect(px+8,py+8,TILE-16,TILE-16);
+      }
+    }
+
+    // chests
+    for(const c of S.chests){
+      const px=c.x*TILE - camX, py=c.y*TILE - camY;
+      ctx.fillStyle = c.open ? '#6b7280' : C.chest;
+      ctx.fillRect(px+7,py+7,TILE-14,TILE-14);
+      ctx.fillStyle='rgba(0,0,0,.35)';
+      ctx.fillRect(px+7,py+Math.floor(TILE/2),TILE-14,3);
+    }
+
+    // mobs
+    for(const m of S.mobs){
+      const px=m.x*TILE - camX, py=m.y*TILE - camY;
+      const base=m.boss?C.boss:C.enemy;
+      const tele=m.boss?C.bossTele:C.tele;
+
+      if(m.isTele){
+        ctx.fillStyle=tele; ctx.fillRect(px+2,py+2,TILE-4,TILE-4);
+        ctx.fillStyle=base; ctx.fillRect(px+6,py+6,TILE-12,TILE-12);
+      } else {
+        ctx.fillStyle=base;
+        const pad=m.boss?3:5;
+        ctx.fillRect(px+pad,py+pad,TILE-pad*2,TILE-pad*2);
+      }
+
+      const w=TILE-10, hpw=w*(m.hp/m.maxhp);
+      ctx.fillStyle='#111827'; ctx.fillRect(px+5,py-6,w,4);
+      ctx.fillStyle=m.boss?C.boss:C.tele; ctx.fillRect(px+5,py-6,hpw,4);
+    }
+
+    // player
+    const ppx=p.x*TILE - camX, ppy=p.y*TILE - camY;
+    ctx.fillStyle=C.player; ctx.fillRect(ppx+5,ppy+5,TILE-10,TILE-10);
+    ctx.fillStyle='rgba(0,0,0,.45)';
+    ctx.fillRect(ppx+TILE/2 + p.f.dx*10 - 3, ppy+TILE/2 + p.f.dy*10 - 3, 6, 6);
+
+    // swipe highlight: show current phase and faint future tiles
+    if(p.swinging && p.attackSeq.length){
+      for(let i=0;i<p.attackSeq.length;i++){
+        const t=p.attackSeq[i];
+        const tx=t.x*TILE - camX, ty=t.y*TILE - camY;
+        ctx.strokeStyle = (i===p.phase) ? C.potion : 'rgba(102,255,204,0.25)';
+        ctx.lineWidth = (i===p.phase) ? 3 : 2;
+        ctx.strokeRect(tx+4,ty+4,TILE-8,TILE-8);
+      }
+      ctx.lineWidth=1;
+    }
+
+    // Apply light mask AFTER drawing world
+    applyLightMask(ppx + TILE/2, ppy + TILE/2);
+
+    // minimap (optional). Draw after fog so it stays visible.
+    if(S.minimap){
+      const s=3, pad=10, mw=W*s, mh=H*s;
+      const ox=canvas.width - mw - pad, oy=pad;
+      ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(ox-6,oy-6,mw+12,mh+12);
+      ctx.strokeStyle='#2a3952'; ctx.strokeRect(ox-6,oy-6,mw+12,mh+12);
+      for(let j=0;j<H;j++) for(let i=0;i<W;i++){
+        if(S.map[j][i]===T.WALL) continue;
+        ctx.fillStyle='#94a3b8'; ctx.fillRect(ox+i*s,oy+j*s,s,s);
+      }
+      if(S.bossId){
+        const b=S.mobs.find(m=>m.id===S.bossId);
+        if(b){ ctx.fillStyle=C.boss; ctx.fillRect(ox+b.x*s,oy+b.y*s,s,s); }
+      }
+      for(const m of S.mobs){ if(m.boss) continue; ctx.fillStyle=C.enemy; ctx.fillRect(ox+m.x*s,oy+m.y*s,s,s); }
+      ctx.fillStyle=C.player; ctx.fillRect(ox+p.x*s,oy+p.y*s,s,s);
+    }
+  }
+
+  function refreshUI(){
+    const p=S.p;
+    const es=eff(p);
+
+    UI.gold.textContent=p.gold;
+    UI.hp.textContent=Math.max(0,p.hp);
+    UI.hpmax.textContent=es.maxHp;
+    UI.hpbar.style.width = `${clamp((p.hp/es.maxHp)*100,0,100)}%`;
+
+    UI.xp.textContent=p.xp;
+    UI.atk.textContent=es.atk;
+    UI.def.textContent=es.def;
+    UI.crit.textContent=`${es.crit}%`;
+
+    UI.eqW.textContent=p.eq.weapon ? p.eq.weapon.name : 'none';
+    UI.eqA.textContent=p.eq.armor ? p.eq.armor.name : 'none';
+    UI.eqT.textContent=p.eq.trinket ? p.eq.trinket.name : 'none';
+
+    const boss=S.bossId ? S.mobs.find(m=>m.id===S.bossId) : null;
+    if(boss){
+      UI.bossState.textContent='alive';
+      UI.bossHp.textContent=`${boss.hp}/${boss.maxhp}`;
+      UI.bossbar.style.width=`${clamp((boss.hp/boss.maxhp)*100,0,100)}%`;
+    } else if(!S.bossSpawned){
+      UI.bossState.textContent='waiting';
+      UI.bossHp.textContent='?';
+      UI.bossbar.style.width='0%';
+    } else {
+      UI.bossState.textContent='defeated';
+      UI.bossHp.textContent='0';
+      UI.bossbar.style.width='0%';
+    }
+
+    // inventory
+    UI.inv.innerHTML='';
+    for(let i=0;i<6;i++){
+      const it=p.inv[i];
+      const div=document.createElement('div');
+      div.className='slot';
+      div.innerHTML = `<div class="row"><div><span class="kbd">${i+1}</span> ${it?`<b>${esc(it.name)}</b>`:`<span class="muted">empty</span>`}</div><div>${it?`<span class="tag">${esc(it.type)}</span>`:''}</div></div>
+        <div class="muted" style="margin-top:6px">${it?`${esc(it.rarity)} • ${esc(it.desc)}`:'Use with 1–6. Drop with Shift+1–6.'}</div>`;
+      UI.inv.appendChild(div);
+    }
+  }
+  function esc(s){ return (s||'').replace(/[&<>"']/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  function frame(ts){
+    if(!S.last) S.last=ts;
+    const dt=clamp(ts-S.last,0,50);
+    S.last=ts;
+
+    update(dt);
+    draw();
+    refreshUI();
+
+    requestAnimationFrame(frame);
+  }
+
+  // boot
+  newRun();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
